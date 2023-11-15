@@ -10,6 +10,8 @@ import (
 func main() {
 	app := echo.New()
 
+	app.Static("/", "webapp")
+
 	app.GET("/api/cpus", func(c echo.Context) error {
 		times, err := cpu.Percent(0, true)
 		if err != nil {
