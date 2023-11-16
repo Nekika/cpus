@@ -41,20 +41,25 @@ func main() {
 		}
 
 		ch := make(chan []float64)
-		if _, err := b.Register(ch); err != nil {
-			log.Println("Failed to register new subscriber:", err.Error())
+
+		id, err := b.Register(ch)
+		if err != nil {
+			log.Println("Failed to register new subscriber")
 			return c.NoContent(http.StatusInternalServerError)
 		}
 
 		for {
 			msg, err := json.Marshal(<-ch)
 			if err != nil {
-				log.Println("Failed to marshal value to JSON:", err.Error())
+				log.Printf("[Subscriber %v] Failed to marshal value to JSON", id)
 				continue
 			}
 
 			if err := conn.Write(context.Background(), websocket.MessageText, msg); err != nil {
-				log.Println("Failed to write message to connection:", err.Error())
+				log.Printf("[Subscriber %v] Failed to write message to connection\n", id)
+
+				b.Revoke(id)
+
 				return nil
 			}
 		}
