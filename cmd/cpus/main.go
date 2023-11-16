@@ -4,84 +4,22 @@ import (
 	"context"
 	"encoding/json"
 	"github.com/labstack/echo/v4"
+	"github.com/nekika/cpus/internal"
+	"github.com/nekika/cpus/lib"
 	"github.com/shirou/gopsutil/v3/cpu"
 	"log"
 	"net/http"
 	"nhooyr.io/websocket"
-	"sync"
-	"time"
 )
-
-func CollectCpuUsages(ch chan<- []float64) {
-	for {
-		usages, err := cpu.Percent(time.Second*1, true)
-		if err != nil {
-			log.Println("Error getting usages:", err.Error())
-
-			continue
-		}
-
-		ch <- usages
-	}
-}
-
-func BroadCastCpuUsages(ch <-chan []float64, clients *map[int]*Client) {
-	for {
-		usages, ok := <-ch
-		if !ok {
-			return
-		}
-
-		if len(*clients) == 0 {
-			continue
-		}
-
-		for _, client := range *clients {
-			client.Chan <- usages
-		}
-		log.Printf("sent cpu usages to %v clients\n", len(*clients))
-	}
-}
-
-type Client struct {
-	Id int
-	*websocket.Conn
-	Chan chan []float64
-}
-
-func NewClient(id int, conn *websocket.Conn) *Client {
-	return &Client{
-		Id:   id,
-		Conn: conn,
-		Chan: make(chan []float64),
-	}
-}
-
-type SafeId struct {
-	mx  sync.Mutex
-	val int
-}
-
-func (si *SafeId) Increment() {
-	si.mx.Lock()
-	defer si.mx.Unlock()
-
-	si.val += 1
-}
-
-func (si *SafeId) Value() int {
-	return si.val
-}
 
 func main() {
 	var (
-		id       = new(SafeId)
-		clients  = make(map[int]*Client)
-		usagesch = make(chan []float64)
+		b  = lib.NewBroadCaster[[]float64]()
+		ch = make(chan []float64)
 	)
 
-	go CollectCpuUsages(usagesch)
-	go BroadCastCpuUsages(usagesch, &clients)
+	go internal.CollectUsages(ch)
+	go b.Broadcast(ch)
 
 	app := echo.New()
 
@@ -102,42 +40,24 @@ func main() {
 			log.Println("Failed to accept WS connection:", err.Error())
 		}
 
-		id.Increment()
-
-		client := NewClient(id.Value(), conn)
-		clients[client.Id] = client
-
-		defer func() {
-			conn.CloseNow()
-			delete(clients, client.Id)
-		}()
+		ch := make(chan []float64)
+		if _, err := b.Register(ch); err != nil {
+			log.Println("Failed to register new subscriber:", err.Error())
+			return c.NoContent(http.StatusInternalServerError)
+		}
 
 		for {
-			ctx := conn.CloseRead(context.Background())
-
-			if err := client.Conn.Ping(ctx); err != nil {
-				log.Printf("Client %v closed the connection\n", client.Id)
-				break
-			}
-
-			usages, ok := <-client.Chan
-			if !ok {
-				break
-			}
-
-			msg, err := json.Marshal(usages)
+			msg, err := json.Marshal(<-ch)
 			if err != nil {
-				log.Println("Failed to marshal usages to JSON")
-
+				log.Println("Failed to marshal value to JSON:", err.Error())
 				continue
 			}
 
-			if err := client.Conn.Write(context.Background(), websocket.MessageText, msg); err != nil {
-				log.Println("Failed to write to connection:", err.Error())
+			if err := conn.Write(context.Background(), websocket.MessageText, msg); err != nil {
+				log.Println("Failed to write message to connection:", err.Error())
+				return nil
 			}
 		}
-
-		return nil
 	})
 
 	log.Fatal(app.Start(":4356"))
