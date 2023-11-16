@@ -20,17 +20,19 @@ function Usage(props) {
 function App() {
     const [usages, setUsages] = useState([])
 
-    function fetchUsages() {
-        return fetch('/api/cpus')
-            .then(response => response.json())
-            .then(setUsages)
-    }
+    useEffect(() => {
+        const url = new URL('/ws/cpus', document.URL)
+        url.protocol = url.protocol.replace('http', 'ws')
 
-    useEffect(async () => {
-        await fetchUsages()
-        const interval = setInterval(() => fetchUsages(), 1000)
+        const conn = new WebSocket(url)
 
-        return () => clearInterval(interval)
+        conn.addEventListener('message', (event) => {
+            setUsages(JSON.parse(event.data))
+        })
+
+        return () => {
+            conn.close()
+        }
     }, [])
 
     return html`<div>
